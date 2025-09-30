@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Amharic Tokenizer Visualization</title>
+<style>
+  :root{
+    --bg: #0f1113;
+    --panel: #0b0c0d;
+    --muted: #9aa4b2;
+    --accent: #7c3aed;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, "Roboto Mono", "Noto Sans Ethiopic", monospace;
+  }
+  html,body{height:100%; margin:0;}
+  body{
+    background: var(--bg);
+    color: #e6eef6;
+    font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans Ethiopic", "Noto Sans", Arial;
+    padding: 20px;
+    -webkit-font-smoothing:antialiased;
+    -moz-osx-font-smoothing:grayscale;
+  }
+
+  h1{margin:0 0 18px 0; font-size:18px; color:#fff}
+  .controls{display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:12px}
+  select, textarea, input[type="text"]{background:transparent; border:1px solid rgba(255,255,255,0.06); color:#eaf2ff; padding:10px 12px; border-radius:10px}
+  select{min-width:160px}
+  textarea{min-height:96px; min-width:500px; max-width:100%; resize:vertical; font-size:15px}
+  .small{font-size:13px; color:var(--muted)}
+  .panel{background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01)); border-radius:12px; padding:16px; margin-top:8px; border:1px solid rgba(255,255,255,0.03)}
+  .toolbar-right{margin-left:auto; display:flex; gap:8px; align-items:center}
+
+  /* token row */
+  .tokens{display:flex; flex-wrap:wrap; gap:8px; align-items:flex-start}
+  .token{
+    display:inline-flex; align-items:center; gap:10px;
+    padding:8px 12px; border-radius:6px; min-height:36px; font-family:var(--mono);
+    font-weight:600; font-size:15px; color:#fff; cursor:pointer; user-select:none;
+    box-shadow: 0 6px 20px rgba(2,6,23,0.6);
+    border: 1px solid rgba(0,0,0,0.2);
+  }
+  .token-id{font-size:12px; opacity:0.9; background:rgba(255,255,255,0.06); padding:4px 6px; border-radius:6px; color:#fff;}
+  .token:hover{transform:translateY(-3px); transition:transform .12s ease}
+
+  /* bottom toggles */
+  .mode-toggle{display:inline-flex; border-radius:999px; overflow:hidden; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.04)}
+  .mode-toggle button{background:transparent; border:0; padding:10px 18px; color:var(--muted); font-weight:600; cursor:pointer}
+  .mode-toggle button.active{background:rgba(0,0,0,0.25); color:#fff}
+
+  .meta{margin-top:12px; color:var(--muted); font-size:13px}
+
+  /* tooltip */
+  .tooltip{position:fixed; z-index:9999; background:#0b1220; color:#ecf6ff; padding:8px 10px; border-radius:8px; font-size:13px; pointer-events:none; transform:translate(-50%,-120%)}
+
+  @media (max-width:720px){
+    textarea{min-width:220px}
+    .controls{gap:8px}
+  }
+</style>
+</head>
+<body>
+
+<h1>Amharic Tokenizer</h1>
+
+<div class="controls">
+  <select id="modeSelect" title="Choose tokenizer mode">
+    <option value="sentencepiece">SentencePiece (server)</option>
+    <option value="bpe">BPE-like (local)</option>
+    <option value="char">Character (local)</option>
+    <option value="whitespace">Whitespace (local)</option>
+    <option value="random">Random (local)</option>
+  </select>
+
+  <textarea id="inputText" placeholder="Type or paste Amharic text — tokenization updates as you type...">
+    “ዝም አልኳቸው ዝም ይበሉኝ
+    ትቻቸዋለሁ ይተዉኝ አልነካቸውም አይንኩኝ” ብለህ፥ ተገልለህ ርቀህ
+    እውነት ይተውኛል ብለህ አንዴት ተስፋ ታደርጋለህ?!...
+    ተስፋ አርገሀስ ምን ልትሆን፥ ወይስ ተስፋው ምን ሲሆንህ? 
+    እንቅልፍ እንጂ እሚያስወስድህ።
+</textarea>
+
+
+
+  <div class="toolbar-right">
+    <div class="mode-toggle" role="tablist" aria-label="Display">
+      <button id="viewTextBtn" class="active" role="tab" aria-selected="true">Text</button>
+      <button id="viewIdsBtn" role="tab">Token IDs</button>
+    </div>
+  </div>
+</div>
+
+<div class="panel" id="panel">
+  <div class="tokens" id="tokensContainer" aria-live="polite"></div>
+  <div class="meta" id="meta">Tokens: 0 • Mode: sentencepiece</div>
+</div>
+
+<div id="tooltip" class="tooltip" style="display:none"></div>
+
+<script>
+/* ---------- simple tokenizers (same ideas as before) ---------- */
+function normalizeText(t){ try { return t.normalize('NFC').trim(); } catch(e){ return t.trim(); } }
+function charTokenizer(text){ return Array.from(text); }
+function whitespaceTokenizer(text){ return text.split(/\s+/).filter(Boolean); }
+function randomSubwordTokenizer(text){
+  return whitespaceTokenizer(text).flatMap(word => {
+    if (word.length <= 2) return [word];
+    let pieces=[], i=0;
+    while(i<word.length){ const r=Math.min(word.length-i, Math.max(1, Math.floor(Math.random()*3))); pieces.push(word.slice(i,i+r)); i+=r; }
+    return pieces;
+  });
+}
+const commonSuffixes=["ኛ","ን","አት","ች","ኝ","ሽ","ይ","ታ","ችው","ችሁ","ነው"];
+function bpeLikeTokenizer(text){
+  return whitespaceTokenizer(text).flatMap(word=>{
+    for(let s of commonSuffixes){ if(word.endsWith(s)&&word.length>s.length+1) return [word.slice(0,word.length-s.length), s]; }
+    if(word.length>6) return [word.slice(0,word.length-2), word.slice(-2)];
+    return [word];
+  });
+}
+function sentencepieceSim(text){
+  const words=whitespaceTokenizer(text);
+  return words.flatMap(w=>{
+    if(!w) return [];
+    const pieces=[]; let buffer="";
+    for(let ch of Array.from(w)){ buffer+=ch; if(buffer.length>=3){ pieces.push(buffer); buffer=""; } }
+    if(buffer) pieces.push(buffer);
+    if(pieces.length>0) pieces[0] = "▁" + pieces[0];
+    return pieces;
+  });
+}
+
+/* ---------- deterministic coloring palette (like screenshot) ---------- */
+const palette = [
+  "#2b1b5b", // deep purple
+  "#3a7744", // green
+  "#8b5a2b", // brown
+  "#9b2b2b", // red
+  "#2b4a6b", // blue
+  "#7f4f20", // warm brown
+  "#5b3b6f", // violet
+  "#2d7f6b", // teal
+  "#6a3a3a", // dark maroon
+  "#2d5b2b"  // dark green
+];
+
+// simple non-cryptographic hash
+function hashString(s){
+  let h = 2166136261 >>> 0;
+  for(let i=0;i<s.length;i++){ h = Math.imul(h ^ s.charCodeAt(i), 16777619) >>> 0; }
+  return h >>> 0;
+}
+function pickColor(token){
+  const idx = hashString(token) % palette.length;
+  return palette[idx];
+}
+
+/* ---------- fetch SentencePiece tokenization from local server ---------- */
+async function tokenizeServer(text){
+  try {
+    const resp = await fetch("http://127.0.0.1:8000/tokenize", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ text: text, mode: "sentencepiece" })
+    });
+    if(!resp.ok) throw new Error("server error");
+    const data = await resp.json();
+    // expect { tokens: [...], ids: [...] }
+    return { tokens: data.tokens || [], ids: data.ids || null, fromServer: true };
+  } catch (e) {
+    // server unreachable
+    return { tokens: null, ids: null, error: e };
+  }
+}
+
+/* ---------- UI & rendering ---------- */
+const inputEl = document.getElementById('inputText');
+const modeSelect = document.getElementById('modeSelect');
+const tokensContainer = document.getElementById('tokensContainer');
+const metaEl = document.getElementById('meta');
+const tooltip = document.getElementById('tooltip');
+const viewTextBtn = document.getElementById('viewTextBtn');
+const viewIdsBtn = document.getElementById('viewIdsBtn');
+
+let showIds = false;
+let lastCall = 0;
+let lastTokens = [];
+let lastIds = null;
+
+function showTooltip(text, ev){
+  tooltip.style.display = 'block';
+  tooltip.textContent = text;
+  moveTooltip(ev);
+}
+function moveTooltip(ev){
+  tooltip.style.left = ev.clientX + 'px';
+  tooltip.style.top = (ev.clientY - 20) + 'px';
+}
+function hideTooltip(){ tooltip.style.display = 'none'; }
+
+/* copy helper */
+async function copyText(t){
+  try { await navigator.clipboard.writeText(t); }
+  catch(e){ /* ignore */ }
+}
+
+/* render tokens (text or ids) */
+function renderTokens(tokens, ids){
+  tokensContainer.innerHTML = '';
+  lastTokens = tokens;
+  lastIds = ids;
+  tokens.forEach((tok, i) => {
+    const tokenEl = document.createElement('div');
+    tokenEl.className = 'token';
+    const color = pickColor(tok);
+    tokenEl.style.background = color;
+    tokenEl.style.borderColor = 'rgba(0,0,0,0.2)';
+    tokenEl.style.color = '#fff';
+    // content: either token text or id
+    const main = document.createElement('div');
+    main.textContent = showIds && ids ? String(ids[i]) : tok;
+    main.style.whiteSpace = 'nowrap';
+    main.style.fontFamily = 'ui-monospace, SFMono-Regular, Menlo, Monaco, "Roboto Mono", "Noto Sans Ethiopic", monospace';
+    main.style.fontWeight = 700;
+    main.style.fontSize = '15px';
+
+    // small id badge (optional)
+    if(!showIds && ids){
+      const idBadge = document.createElement('div');
+      idBadge.className = 'token-id';
+      idBadge.textContent = ids[i];
+      tokenEl.appendChild(main);
+      tokenEl.appendChild(idBadge);
+    } else {
+      tokenEl.appendChild(main);
+    }
+
+    // interactions
+    tokenEl.addEventListener('mouseenter', (ev) => {
+      showTooltip(tok + (ids ? " — id: " + ids[i] : ""), ev);
+      metaEl.textContent = `Token: "${tok}"${ids ? " • id: "+ids[i] : ""}`;
+    });
+    tokenEl.addEventListener('mousemove', moveTooltip);
+    tokenEl.addEventListener('mouseleave', () => { hideTooltip(); metaEl.textContent = showIds ? `Mode: ${modeSelect.value} • showing IDs` : `Mode: ${modeSelect.value}`; });
+    tokenEl.addEventListener('click', async () => { await copyText(tok); metaEl.textContent = 'Copied: ' + tok; setTimeout(()=> metaEl.textContent = showIds ? `Mode: ${modeSelect.value} • showing IDs` : `Mode: ${modeSelect.value}`, 800); });
+
+    tokensContainer.appendChild(tokenEl);
+  });
+  metaEl.textContent = `Tokens: ${tokens.length} • Mode: ${modeSelect.value}${showIds? " • showing IDs":""}`;
+}
+
+/* fallback ids generator for local tokenizers (stable by token) */
+function deterministicId(token){
+  return (hashString(token) % 30000) + 100;
+}
+
+/* decide which tokenizer and get tokens + ids */
+async function getTokensAndIds(mode, text){
+  text = normalizeText(text);
+  if(mode === 'sentencepiece'){
+    const resp = await tokenizeServer(text);
+    if(resp && resp.tokens){ return { tokens: resp.tokens, ids: resp.ids || resp.tokens.map(t=>deterministicId(t)), source: 'server' }; }
+    // fallback
+    const tok = sentencepieceSim(text);
+    return { tokens: tok, ids: tok.map(t=>deterministicId(t)), source: 'sim' };
+  }
+  if(mode === 'char'){ const t = charTokenizer(text); return { tokens: t, ids: t.map(tt=>deterministicId(tt)), source:'local' }; }
+  if(mode === 'whitespace'){ const t = whitespaceTokenizer(text); return { tokens: t, ids: t.map(tt=>deterministicId(tt)), source:'local' }; }
+  if(mode === 'random'){ const t = randomSubwordTokenizer(text); return { tokens: t, ids: t.map(tt=>deterministicId(tt)), source:'local' }; }
+  if(mode === 'bpe'){ const t = bpeLikeTokenizer(text); return { tokens: t, ids: t.map(tt=>deterministicId(tt)), source:'local' }; }
+  // default
+  const t = whitespaceTokenizer(text);
+  return { tokens: t, ids: t.map(tt=>deterministicId(tt)), source:'local' };
+}
+
+/* debounce and live update */
+let debounceTimer = null;
+async function liveUpdate(){
+  if(debounceTimer) clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(async ()=>{
+    const mode = modeSelect.value;
+    const text = inputEl.value || '';
+    const result = await getTokensAndIds(mode, text);
+    renderTokens(result.tokens, result.ids);
+  }, 180); // 180ms debounce
+}
+
+/* wiring */
+inputEl.addEventListener('input', liveUpdate);
+modeSelect.addEventListener('change', liveUpdate);
+viewTextBtn.addEventListener('click', () => { showIds = false; viewTextBtn.classList.add('active'); viewIdsBtn.classList.remove('active'); liveUpdate(); });
+viewIdsBtn.addEventListener('click', () => { showIds = true; viewIdsBtn.classList.add('active'); viewTextBtn.classList.remove('active'); liveUpdate(); });
+
+/* initial */
+liveUpdate();
+
+/* --- include the same small local tokenizers to ensure fallback works (copied inline) --- */
+function whitespaceTokenizer(text){ return text.split(/\s+/).filter(Boolean); }
+function charTokenizer(text){ return Array.from(text); }
+function randomSubwordTokenizer(text){
+  return whitespaceTokenizer(text).flatMap(word => {
+    if (word.length <= 2) return [word];
+    let pieces = [], i = 0;
+    while (i < word.length) {
+      const r = Math.min(word.length - i, Math.max(1, Math.floor(Math.random()*3)));
+      pieces.push(word.slice(i, i + r));
+      i += r;
+    }
+    return pieces;
+  });
+}
+function bpeLikeTokenizer(text){
+  return whitespaceTokenizer(text).flatMap(word => {
+    for (let s of ["ኛ","ን","አት","ች","ኝ","ሽ","ይ","ታ","ችው","ችሁ","ነው"]) {
+      if (word.endsWith(s) && word.length > s.length+1) return [word.slice(0, word.length-s.length), s];
+    }
+    if (word.length > 6) return [word.slice(0, word.length-2), word.slice(-2)];
+    return [word];
+  });
+}
+function sentencepieceSim(text){
+  const words = whitespaceTokenizer(text);
+  return words.flatMap(w => {
+    if (!w) return [];
+    const pieces = []; let buffer = "";
+    for (let ch of Array.from(w)) { buffer += ch; if (buffer.length >= 3) { pieces.push(buffer); buffer = ""; } }
+    if (buffer) pieces.push(buffer);
+    if (pieces.length > 0) pieces[0] = "▁" + pieces[0];
+    return pieces;
+  });
+}
+</script>
+</body>
+</html>
